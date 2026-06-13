@@ -37,7 +37,7 @@ bash uninstall.sh
 /root/hysteria2-client.txt
 ```
 
-该文件中包含服务端地址、端口、密码、自签证书说明和示例客户端配置。Hysteria2 默认使用 `8443/udp`，并使用自签证书，因此客户端通常需要显式开启 `insecure: true`。
+该文件中包含服务端地址、端口、密码、自签证书说明和示例客户端配置。Hysteria2 默认使用 `443/udp`，并使用自签证书，因此客户端通常需要显式开启 `insecure: true`。
 
 ## 7. 为什么默认使用自签证书
 
@@ -50,7 +50,7 @@ bash uninstall.sh
 ## 9. 常见故障排查
 
 1. 服务起不来：先执行 `bash status.sh` 查看 systemd 状态和日志。
-2. 端口不通：确认 `8443/udp` 是否已放行，检查云厂商安全组和本机 UFW。
+2. 端口不通：确认 `443/udp` 是否已放行，检查云厂商安全组和本机 UFW。
 3. 客户端连不上：确认客户端配置中的 `server`、`port`、`password` 是否与 `/root/hysteria2-client.txt` 一致。
 4. 证书报错：自签证书属于预期行为，客户端需要启用 `insecure: true`。
 5. 安装失败：检查 VPS 是否能够访问软件源，或是否存在旧的 Hysteria2 配置与服务残留。

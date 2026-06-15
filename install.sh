@@ -85,6 +85,23 @@ get_public_ip() {
   printf '%s\n' "$ip"
 }
 
+url_encode() {
+  local value="$1"
+  jq -rn --arg value "$value" '$value|@uri'
+}
+
+generate_hy2_uri() {
+  local password="$1"
+  local public_ip="$2"
+  local encoded_password
+  local encoded_name
+
+  encoded_password="$(url_encode "$password")"
+  encoded_name="$(url_encode "Hysteria2-${public_ip}")"
+
+  printf 'hysteria2://%s@%s:%s/?insecure=1#%s\n' "$encoded_password" "$public_ip" "$PORT" "$encoded_name"
+}
+
 backup_existing_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
     local backup_file
@@ -203,6 +220,7 @@ verify_listening() {
 write_client_file() {
   local password="$1"
   local public_ip="$2"
+  local hy2_uri="$3"
 
   cat > "$CLIENT_FILE" <<EOF
 ============================================================
@@ -214,6 +232,11 @@ Hysteria2 客户端配置
 认证密码: ${password}
 TLS: self-signed
 insecure: true
+
+============================================================
+Hysteria2 导入链接
+============================================================
+${hy2_uri}
 
 ============================================================
 最终客户端 YAML，请复制到客户端使用
@@ -235,6 +258,7 @@ EOF
   printf "${YELLOW}认证密码：%s${NC}\n" "$password"
   printf "${YELLOW}TLS 类型：self-signed，自签证书${NC}\n"
   printf "${YELLOW}客户端需要：insecure: true${NC}\n"
+  printf "${YELLOW}导入链接：%s${NC}\n" "$hy2_uri"
   printf "${YELLOW}服务端配置：%s${NC}\n" "$CONFIG_FILE"
   printf "${YELLOW}客户端配置保存路径：%s${NC}\n" "$CLIENT_FILE"
   printf "\n"
@@ -260,9 +284,22 @@ print_management_commands() {
   printf "${YELLOW}查看客户端配置：${NC}cat ${CLIENT_FILE}\n"
 }
 
+print_subscription_link() {
+  local hy2_uri="$1"
+
+  printf "\n"
+  printf "${BOLD}${GREEN}========================================${NC}\n"
+  printf "${BOLD}${GREEN} Hysteria2 Subscription Link${NC}\n"
+  printf "${BOLD}${GREEN}========================================${NC}\n"
+  printf "${BOLD}${YELLOW}%s${NC}\n" "$hy2_uri"
+  printf "${BOLD}${GREEN}========================================${NC}\n"
+  printf "\n"
+}
+
 main() {
   local password
   local public_ip
+  local hy2_uri
 
   require_root
   check_ubuntu
@@ -271,6 +308,7 @@ main() {
 
   password="$(generate_password)"
   public_ip="$(get_public_ip)"
+  hy2_uri="$(generate_hy2_uri "$password" "$public_ip")"
 
   backup_existing_config
   generate_self_signed_cert
@@ -279,9 +317,9 @@ main() {
   configure_ufw
   restart_service
   verify_listening
-  write_client_file "$password" "$public_ip"
+  write_client_file "$password" "$public_ip" "$hy2_uri"
   print_management_commands
+  print_subscription_link "$hy2_uri"
 }
 
 main "$@"
-EOF

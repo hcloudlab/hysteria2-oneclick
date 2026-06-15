@@ -13,8 +13,16 @@
 
 ## 3. 一键安装命令
 
+建议使用 root 用户执行：
+
 ```bash
-bash install.sh
+sudo -i
+```
+
+然后执行推荐的一键安装命令：
+
+```bash
+apt update && apt install -y curl && bash <(curl -fsSL https://raw.githubusercontent.com/hexa46656-creator/hysteria2-oneclick/main/install.sh)
 ```
 
 ## 4. 查看状态命令

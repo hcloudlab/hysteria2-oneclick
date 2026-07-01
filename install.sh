@@ -11,10 +11,16 @@ CERT_CRT="/etc/hysteria/certs/server.crt"
 SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
 CLIENT_FILE="/root/hysteria2-client.txt"
 NETWORK_SYSCTL_FILE="/etc/sysctl.d/99-hysteria2-oneclick-tuning.conf"
+INSTALL_LOCK_FILE="/etc/vpsguard/hysteria2-oneclick.lock"
+INSTALL_REPORT_FILE="/root/hysteria2-oneclick-install-report.txt"
 PORT="${PORT:-443}"
 MASQUERADE_URL="${MASQUERADE_URL:-https://speed.cloudflare.com}"
 MASQUERADE_HOST="${MASQUERADE_HOST:-speed.cloudflare.com}"
 INSTALLER_CORE_DIR="${INSTALLER_CORE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../vps-installer-core" 2>/dev/null && pwd || true)}"
+
+declare -a ROLLBACK_TARGETS=()
+declare -a ROLLBACK_BACKUPS=()
+ROLLBACK_DONE=0
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,7 +31,180 @@ NC='\033[0m'
 
 log() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
-err() { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; }
+err() { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; return 1; }
+
+section_header() { printf "\n%b\n" "${BOLD}${CYAN}========== $1 ==========${NC}"; }
+
+track_rollback_target() {
+  ROLLBACK_TARGETS+=("$1")
+  ROLLBACK_BACKUPS+=("${2:-}")
+}
+
+backup_file() {
+  local file="$1"
+  local backup_file
+
+  if [[ -f "${file}" ]]; then
+    backup_file="${file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "${file}" "${backup_file}"
+    track_rollback_target "${file}" "${backup_file}"
+  fi
+}
+
+track_created_path() {
+  track_rollback_target "$1" ""
+}
+
+write_install_lock() {
+  mkdir -p "$(dirname "${INSTALL_LOCK_FILE}")"
+  cat > "${INSTALL_LOCK_FILE}" <<EOF
+installed_at=$(date -Is)
+repo=hysteria2-oneclick
+service=hysteria-server.service
+config=${CONFIG_FILE}
+client_info=${CLIENT_FILE}
+EOF
+  chmod 600 "${INSTALL_LOCK_FILE}"
+}
+
+load_install_state() {
+  if [[ -f "${INSTALL_LOCK_FILE}" ]]; then
+    INSTALL_ALREADY_INSTALLED=1
+    log "Detected existing installation lock: ${INSTALL_LOCK_FILE}"
+  else
+    INSTALL_ALREADY_INSTALLED=0
+  fi
+}
+
+rollback_partial_install() {
+  local i
+
+  section_header "RECOVERY"
+  warn "Attempting rollback to a safe state..."
+
+  systemctl stop hysteria-server.service >/dev/null 2>&1 || true
+  systemctl disable hysteria-server.service >/dev/null 2>&1 || true
+
+  for ((i=${#ROLLBACK_TARGETS[@]}-1; i>=0; i--)); do
+    if [[ -n "${ROLLBACK_BACKUPS[$i]}" && -f "${ROLLBACK_BACKUPS[$i]}" ]]; then
+      cp -a "${ROLLBACK_BACKUPS[$i]}" "${ROLLBACK_TARGETS[$i]}"
+      warn "Restored ${ROLLBACK_TARGETS[$i]} from backup."
+    else
+      rm -f "${ROLLBACK_TARGETS[$i]}"
+      warn "Removed partial path ${ROLLBACK_TARGETS[$i]}."
+    fi
+  done
+
+  rm -f "${INSTALL_LOCK_FILE}" "${INSTALL_REPORT_FILE}"
+}
+
+on_error() {
+  local line="$1"
+  local cmd="$2"
+
+  printf "%b\n" "${RED}[ERROR]${NC} Installation failed at line ${line}: ${cmd}"
+  rollback_partial_install
+  ROLLBACK_DONE=1
+  exit 1
+}
+
+on_exit() {
+  local status="$1"
+
+  if [[ "${status}" -ne 0 && "${ROLLBACK_DONE}" -eq 0 ]]; then
+    rollback_partial_install
+    ROLLBACK_DONE=1
+  fi
+}
+
+probe_network() {
+  section_header "NETWORK DIAGNOSTICS"
+
+  if command -v ping >/dev/null 2>&1; then
+    if ping -c 3 -W 2 1.1.1.1 >/tmp/hysteria2-ping.log 2>&1; then
+      log "Ping to 1.1.1.1 succeeded."
+      awk '/^rtt|^round-trip/ {print}' /tmp/hysteria2-ping.log | tail -n1 || true
+    else
+      warn "Ping to 1.1.1.1 failed."
+    fi
+    rm -f /tmp/hysteria2-ping.log
+  else
+    warn "ping command is not available; skipping ICMP probe."
+  fi
+
+  if curl_time="$(curl -4 -fsS --connect-timeout 3 --max-time 5 -o /dev/null -w 'connect=%{time_connect}s total=%{time_total}s' https://api.ipify.org 2>/dev/null || true)"; [[ -n "${curl_time}" ]]; then
+    log "Curl connectivity test succeeded: ${curl_time}"
+  else
+    warn "Curl connectivity test could not complete."
+  fi
+
+  if ss -ulpn 2>/dev/null | grep -E ":${PORT}\b" >/dev/null; then
+    warn "A UDP service is already listening on port ${PORT}."
+  else
+    log "No UDP conflict detected on port ${PORT}."
+  fi
+}
+
+preflight_phase() {
+  section_header "PHASE 1 - PREFLIGHT"
+  require_root
+  check_ubuntu
+  install_dependencies
+  probe_network
+}
+
+verify_phase() {
+  section_header "PHASE 4 - VERIFY"
+
+  if systemctl is-active --quiet hysteria-server.service; then
+    log "Hysteria2 service is active."
+  else
+    err "Hysteria2 service is not active."
+  fi
+
+  if ss -ulpn | grep -q ":${PORT}"; then
+    log "Hysteria2 is listening on ${PORT}/udp."
+  else
+    err "Hysteria2 is not listening on ${PORT}/udp."
+  fi
+
+  if [[ -s "${CLIENT_FILE}" ]]; then
+    log "Client file exists: ${CLIENT_FILE}"
+  else
+    err "Client file is missing."
+  fi
+
+  local packet_loss
+  packet_loss="$(ping -c 3 -W 2 1.1.1.1 2>/dev/null | awk -F', ' '/packet loss/ {gsub(/% packet loss/, "", $3); print $3; exit}' || true)"
+  if [[ -n "${packet_loss}" ]]; then
+    log "UDP loss / ICMP loss sample: ${packet_loss}%"
+    if [[ "${packet_loss}" -gt 0 ]]; then
+      warn "Packet loss detected. Hysteria2 will rely on MTU adaptation and congestion control fallback."
+    fi
+  fi
+
+  log "Optional FEC validation: upstream server config does not expose a stable server-side FEC toggle, so FEC remains client/toolchain dependent."
+}
+
+report_phase() {
+  section_header "PHASE 5 - REPORT"
+
+  cat > "${INSTALL_REPORT_FILE}" <<EOF
+Repository: hysteria2-oneclick
+State lock: ${INSTALL_LOCK_FILE}
+Service: hysteria-server.service
+Config: ${CONFIG_FILE}
+Client info: ${CLIENT_FILE}
+Port: ${PORT}/udp
+Masquerade host: ${MASQUERADE_HOST}
+Install mode: ${INSTALL_ALREADY_INSTALLED:-0}
+MTU fallback: disablePathMTUDiscovery=false
+EOF
+  chmod 600 "${INSTALL_REPORT_FILE}"
+
+  log "Installation report saved to ${INSTALL_REPORT_FILE}"
+  cat "${INSTALL_REPORT_FILE}"
+}
 
 if [[ -n "${INSTALLER_CORE_DIR}" && -f "${INSTALLER_CORE_DIR}/installer_core.sh" ]]; then
   # shellcheck source=/dev/null
@@ -41,7 +220,7 @@ if ! declare -F installer_core_detect_os >/dev/null 2>&1; then
 
     if [[ ! -r /etc/os-release ]]; then
       err "无法读取 /etc/os-release"
-      exit 1
+      return 1
     fi
 
     # shellcheck disable=SC1091
@@ -53,13 +232,13 @@ if ! declare -F installer_core_detect_os >/dev/null 2>&1; then
 
     case "${os_id}" in
       ubuntu|debian) ;;
-      *) err "不支持的系统：${os_pretty_name}，仅支持 Ubuntu 或 Debian"; exit 1 ;;
+      *) err "不支持的系统：${os_pretty_name}，仅支持 Ubuntu 或 Debian"; return 1 ;;
     esac
 
     init_comm="$(ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ "${init_comm}" != "systemd" && ! -d /run/systemd/system ]]; then
       err "systemd 不可用，无法继续安装"
-      exit 1
+      return 1
     fi
 
     # shellcheck disable=SC2034
@@ -134,7 +313,7 @@ require_root() {
   if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     err "请使用 root 执行：bash install.sh"
     err "如果你是普通 sudo 用户，请先执行：sudo -i"
-    exit 1
+    return 1
   fi
 }
 
@@ -271,7 +450,7 @@ get_public_ip() {
 
   if [[ -z "$ip" ]]; then
     err "无法获取服务器公网 IPv4。"
-    exit 1
+    return 1
   fi
 
   printf '%s
@@ -349,7 +528,10 @@ backup_existing_config() {
     local backup_file
     backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
     cp "$CONFIG_FILE" "$backup_file"
+    track_rollback_target "$CONFIG_FILE" "$backup_file"
     warn "检测到已有配置文件，已备份为：$backup_file"
+  else
+    track_created_path "$CONFIG_FILE"
   fi
 }
 
@@ -410,6 +592,9 @@ EOF
 write_systemd_service() {
   log "写入 systemd 服务：$SERVICE_FILE"
 
+  [[ -f "$SERVICE_FILE" ]] && backup_file "$SERVICE_FILE"
+  [[ -f "$SERVICE_FILE" ]] || track_created_path "$SERVICE_FILE"
+
   cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Hysteria2 Server Service
@@ -453,7 +638,7 @@ restart_service() {
   if ! systemctl is-active --quiet hysteria-server.service; then
     err "Hysteria2 服务启动失败。"
     err "请查看日志：journalctl -u hysteria-server.service -n 100 --no-pager"
-    exit 1
+    return 1
   fi
 }
 
@@ -474,6 +659,7 @@ write_client_file() {
   local hy2_uri="$3"
 
   export HY2_URI="${hy2_uri}"
+  [[ -f "$CLIENT_FILE" ]] || track_created_path "$CLIENT_FILE"
 
   cat > "$CLIENT_FILE" <<EOF
 ============================================================
@@ -581,9 +767,13 @@ main() {
   local public_ip
   local hy2_uri
 
-  require_root
-  check_ubuntu
-  install_dependencies
+  trap 'on_error "${LINENO}" "${BASH_COMMAND}"' ERR
+  trap 'on_exit "$?"' EXIT
+
+  preflight_phase
+  load_install_state
+
+  section_header "PHASE 2 - INSTALL"
   enable_network_tuning
   check_masquerade_dns
   check_bbr
@@ -602,6 +792,10 @@ main() {
   restart_service
   verify_listening
   write_client_file "$password" "$public_ip" "$hy2_uri"
+  write_install_lock
+
+  verify_phase
+  report_phase
   print_management_commands
   print_subscription_link "$hy2_uri"
 }

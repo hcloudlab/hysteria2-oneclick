@@ -433,8 +433,16 @@ install_hysteria2() {
     return
   fi
 
-  log "安装 Hysteria2..."
-  bash <(curl -fsSL https://get.hy2.sh/)
+  log "安装 Hysteria2...（官方安装器输出记录在 /tmp/hysteria2-official-install.log）"
+  # 官方安装器结束时会提示手动编辑配置、手动启动服务，这些步骤本脚本会自动完成，
+  # 直接透传会误导用户，因此静默执行，仅在失败时回显完整日志。
+  if ! bash <(curl -fsSL https://get.hy2.sh/) >/tmp/hysteria2-official-install.log 2>&1; then
+    cat /tmp/hysteria2-official-install.log
+    err "Hysteria2 官方安装器执行失败。"
+    return 1
+  fi
+
+  log "Hysteria2 安装完成：$(hysteria version 2>/dev/null | head -n 1 || true)"
 }
 
 generate_password() {

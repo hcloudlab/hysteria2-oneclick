@@ -122,13 +122,15 @@ probe_network() {
   section_header "NETWORK DIAGNOSTICS"
 
   if command -v ping >/dev/null 2>&1; then
-    if ping -c 3 -W 2 1.1.1.1 >/tmp/hysteria2-ping.log 2>&1; then
+    local ping_log
+    ping_log="$(mktemp)"
+    if ping -c 3 -W 2 1.1.1.1 >"${ping_log}" 2>&1; then
       log "Ping to 1.1.1.1 succeeded."
-      awk '/^rtt|^round-trip/ {print}' /tmp/hysteria2-ping.log | tail -n1 || true
+      awk '/^rtt|^round-trip/ {print}' "${ping_log}" | tail -n1 || true
     else
       warn "Ping to 1.1.1.1 failed."
     fi
-    rm -f /tmp/hysteria2-ping.log
+    rm -f "${ping_log}"
   else
     warn "ping command is not available; skipping ICMP probe."
   fi
@@ -433,11 +435,13 @@ install_hysteria2() {
     return
   fi
 
-  log "安装 Hysteria2...（官方安装器输出记录在 /tmp/hysteria2-official-install.log）"
+  local official_log
+  official_log="$(mktemp)"
+  log "安装 Hysteria2...（官方安装器输出记录在 ${official_log}）"
   # 官方安装器结束时会提示手动编辑配置、手动启动服务，这些步骤本脚本会自动完成，
   # 直接透传会误导用户，因此静默执行，仅在失败时回显完整日志。
-  if ! bash <(curl -fsSL https://get.hy2.sh/) >/tmp/hysteria2-official-install.log 2>&1; then
-    cat /tmp/hysteria2-official-install.log
+  if ! bash <(curl -fsSL https://get.hy2.sh/) >"${official_log}" 2>&1; then
+    cat "${official_log}"
     err "Hysteria2 官方安装器执行失败。"
     return 1
   fi

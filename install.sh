@@ -473,9 +473,10 @@ get_public_ip() {
 check_masquerade_dns() {
   local system_dns cloudflare_dns google_dns unique_count
 
-  system_dns="$(dig +short A "$MASQUERADE_HOST" | head -n1 | tr -d '\r')"
-  cloudflare_dns="$(dig +short A "$MASQUERADE_HOST" @1.1.1.1 | head -n1 | tr -d '\r')"
-  google_dns="$(dig +short A "$MASQUERADE_HOST" @8.8.8.8 | head -n1 | tr -d '\r')"
+  # head 提前关管道会让 dig 收 SIGPIPE，配合 pipefail 会误判失败，故加 || true
+  system_dns="$(dig +short A "$MASQUERADE_HOST" | head -n1 | tr -d '\r' || true)"
+  cloudflare_dns="$(dig +short A "$MASQUERADE_HOST" @1.1.1.1 | head -n1 | tr -d '\r' || true)"
+  google_dns="$(dig +short A "$MASQUERADE_HOST" @8.8.8.8 | head -n1 | tr -d '\r' || true)"
 
   log "伪装站点 DNS 检查：${MASQUERADE_HOST}"
   log "系统 DNS 解析结果：${system_dns:-<空>}"

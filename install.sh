@@ -27,6 +27,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[1;36m'
 BOLD='\033[1m'
+BOLD_GREEN='\033[1;32m'
 NC='\033[0m'
 
 log() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
@@ -748,18 +749,24 @@ print_management_commands() {
 }
 
 # shellcheck disable=SC2059
-print_subscription_link() {
-  local hy2_uri="$1"
+print_final_subscription_banner() {
+  local link="${1:-}"
+  local border
+  border="$(printf '%.0s=' {1..60})"
+
+  if [[ -z "${link}" ]]; then
+    warn "Subscription link is empty; nothing to display in final banner."
+    return 0
+  fi
 
   printf "\n"
-  printf "${BOLD}${GREEN}========================================${NC}\n"
-  printf "${BOLD}${GREEN} Hysteria2 Subscription Link${NC}\n"
-  printf "${BOLD}${GREEN}========================================${NC}\n"
-  printf "${BOLD}${YELLOW}%s${NC}\n" "$hy2_uri"
-  printf "${BOLD}${GREEN}========================================${NC}\n"
+  printf "${BOLD_GREEN}%s${NC}\n" "${border}"
+  printf "${BOLD_GREEN}  订阅链接 / SUBSCRIPTION LINK — 请立即保存${NC}\n"
+  printf "${BOLD_GREEN}%s${NC}\n" "${border}"
+  printf "${CYAN}%s${NC}\n" "${link}"
+  printf "${BOLD_GREEN}%s${NC}\n" "${border}"
+  printf "${YELLOW}完整客户端信息已保存到: %s${NC}\n" "${CLIENT_FILE}"
   printf "\n"
-
-  print_client_qr "${SUBSCRIPTION_ACCESS_URL:-${hy2_uri:-}}" "/root/hysteria2-qr.png"
 }
 
 main() {
@@ -797,7 +804,8 @@ main() {
   verify_phase
   report_phase
   print_management_commands
-  print_subscription_link "$hy2_uri"
+  print_client_qr "${SUBSCRIPTION_ACCESS_URL:-${hy2_uri}}" "/root/hysteria2-qr.png"
+  print_final_subscription_banner "${SUBSCRIPTION_ACCESS_URL:-${hy2_uri}}"
 }
 
 main "$@"

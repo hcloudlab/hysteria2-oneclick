@@ -519,7 +519,7 @@ generate_hy2_uri() {
   local encoded_name
 
   encoded_password="$(url_encode "$password")"
-  encoded_name="$(url_encode "Hysteria2-${public_ip}")"
+  encoded_name="$(url_encode "Hysteria2")"
 
   printf 'hysteria2://%s@%s:%s/?insecure=1#%s\n' "$encoded_password" "$public_ip" "$PORT" "$encoded_name"
 }
